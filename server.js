@@ -8,7 +8,7 @@ const directory = require('./2fa_directory.json');
 
 const dbUri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.egjedqq.mongodb.net/?retryWrites=true&w=majority`;
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 const logger = (req, res, next) => {
     const timestamp = new Date().toLocaleString();
@@ -72,7 +72,7 @@ const getCompromisedAccounts = async (email) => {
             }
         }
     } catch (error) {
-        console.log('No breaches found.');
+        return [];
     }
     return breaches;
 }
@@ -98,7 +98,6 @@ const createCompromisedPwTask = async (email, accounts) => {
 
 const initializeUser = async (email) => {
     const collection = client.db("app").collection("users");
-    console.log("Creating new user...");
     await collection.insertOne({email: email});
     const compromisedAccounts = await getCompromisedAccounts(email);
     await createCompromisedPwTask(email, compromisedAccounts);
@@ -110,7 +109,6 @@ const getNextCompromisedPwTask = async (email) => {
     try {
         user = await collection.findOne({email: email});
     } catch (err) {
-        console.log(`Could not find user in DB.`);
         return;
     }
     const now = new Date();
@@ -169,7 +167,7 @@ app.post('/task', async (req, res) => {
     try {
         user = await collection.findOne({email: userEmail});
     } catch (err) {
-        console.log(`Could not find user in DB.`);
+        user = undefined;
     }
 
     if (!user) {
@@ -177,7 +175,7 @@ app.post('/task', async (req, res) => {
     }
 
     const is2FAvailable = check2FA(domain, userEmail);
-    let isRelevant = false;
+    let isRelevant;
     try {
         isRelevant = !user.interactions.some((interaction) => {
         return interaction.domain === domain;
@@ -198,6 +196,10 @@ app.post('/task', async (req, res) => {
     return res.sendStatus(200);
 });
 
+app.get('/', async (req, res) => {
+    res.send('Extension server is running!');
+});
+
 app.get("/instructions/:type/:url", async (req, res) => {
     const type = req.params.type;
     const url = req.params.url;
@@ -215,7 +217,6 @@ app.post("/feedback", async (req, res) => {
     try {
         await collection.findOne({email: req.body.email});
     } catch (err) {
-        console.log('Could not find user in DB.');
         return res.sendStatus(400);
     }
 
