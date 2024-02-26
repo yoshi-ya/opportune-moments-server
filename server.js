@@ -3,6 +3,7 @@ const cors = require("cors");
 const axios = require("axios");
 const { MongoClient } = require("mongodb");
 const { OpenAI } = require("openai");
+const { encrypt, decrypt } = require("./crypto");
 const directory = require("./2fa_directory.json");
 
 const dbUri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.egjedqq.mongodb.net/?retryWrites=true&w=majority`;
@@ -79,12 +80,11 @@ const createCompromisedPwTask = async (email, accounts) => {
     const collection = client.db("app").collection("users");
     try {
         for (const account of accounts) {
+            const encryptedDomain = encrypt(account.domain);
             await collection.findOneAndUpdate({ email }, {
                 $push: {
-                    tasks: {
-                        type: "pw",
-                        domain: account.domain,
-                        state: "PENDING"
+                    compromisedDomains: {
+                        domain: encryptedDomain
                     }
                 }
             });
@@ -109,20 +109,21 @@ const getNextCompromisedPwTask = async (email) => {
     } catch (err) {
         return;
     }
-    const now = new Date();
-    const lastPwNotificationDate = user.lastPwNotificationDate || now;
-    const timeDiff = Math.abs(now - lastPwNotificationDate) / 1000;
-    if (!timeDiff > 60 * 60 * 24) {
+    const now = new Date().toLocaleString();
+    const lastPwNotificationDate = user.lastPwNotificationDate;
+    // if the last notification was more than 24 hours ago or there was no notification yet
+    const isRelevant = !lastPwNotificationDate || (lastPwNotificationDate && Math.abs(now - lastPwNotificationDate) / 1000 > 60 * 60 * 24);
+    if (!isRelevant) {
         return;
     }
-
     try {
-        const tasks = user.tasks;
-        const pwTasks = tasks.filter((task) => {
-            return task.type === "pw" && task.state === "PENDING";
-        });
-        if (pwTasks.length > 0) {
-            return pwTasks[0];
+        const tasks = user.compromisedDomains || [];
+        if (tasks.length > 0) {
+            const encryptedDomain = tasks[0].domain;
+            return {
+                type: "pw",
+                domain: decrypt(encryptedDomain)
+            };
         }
     } catch (err) {
         return undefined;
@@ -132,26 +133,22 @@ const getNextCompromisedPwTask = async (email) => {
 const updateLastPwNotificationDate = async (email) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.updateOne({ email }, { $set: { lastPwNotificationDate: new Date() } });
+        await collection.updateOne({ email }, { $set: { lastPwNotificationDate: new Date().toLocaleString() } });
     } catch (err) {
         console.log("Could not update last compromised password notification date.");
     }
 };
 
-const updateLastPwNotificationState = async (email, domain) => {
+const updateCompromisedPwTasks = async (email, domain) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.updateOne({ email, "tasks.domain": domain }, {
-            $set: {
-                "tasks.$": {
-                    type: "pw",
-                    domain,
-                    state: "FINISHED"
-                }
+        await collection.updateOne({ email }, {
+            $pop: {
+                compromisedDomains: -1
             }
         });
     } catch (err) {
-        console.log("Could not update compromised password task state.");
+        console.log("Could not update compromised password tasks.");
     }
 };
 
@@ -159,13 +156,16 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
     try {
         const collection = client.db("app").collection("users");
         const user = await collection.findOne({ email });
-        const interactions = user.interactions;
         // sorted from oldest to newest
-        const interactionsWithoutSurvey = interactions.filter((interaction) => {
+        const interactionsWithoutSurvey = user.interactions.filter((interaction) => {
             // if the interaction has no survey and is older than 3 minutes
-            return interaction.survey === undefined && Math.abs(interaction.date - new Date()) / 1000 > 60 * 3;
+            return interaction.survey === undefined && Math.abs(interaction.date - new Date().toLocaleString()) / 1000 > 60 * 3;
         }).sort((a, b) => a.date - b.date);
-        return interactionsWithoutSurvey[0];
+        const task = interactionsWithoutSurvey[0];
+        return {
+            type: task.type,
+            domain: decrypt(task.domain)
+        };
     } catch (err) {
         return undefined;
     }
@@ -204,8 +204,13 @@ app.post("/popup", async (req, res) => {
     const is2FAvailable = check2FA(domain, userEmail);
     let taskExists;
     if (user && user.interactions) {
+        for (const interaction of user.interactions) {
+            if (interaction.domain) {
+                interaction.decryptedDomain = decrypt(interaction.domain);
+            }
+        }
         taskExists = user.interactions.find((interaction) => {
-            return interaction.domain === domain && interaction.type === "2fa";
+            return interaction.decryptedDomain === domain && interaction.type === "2fa";
         });
     } else {
         taskExists = false;
@@ -247,9 +252,9 @@ app.post("/interaction", async (req, res) => {
         await collection.findOneAndUpdate({ email: req.body.email }, {
             $push: {
                 interactions: {
-                    date: new Date(),
+                    date: new Date().toLocaleString(),
                     type: req.body.taskType,
-                    domain: req.body.domain
+                    domain: encrypt(req.body.domain)
                 }
             }
         });
@@ -260,7 +265,7 @@ app.post("/interaction", async (req, res) => {
 
     if (req.body.taskType === "pw") {
         await updateLastPwNotificationDate(req.body.email);
-        await updateLastPwNotificationState(req.body.email, req.body.domain);
+        await updateCompromisedPwTasks(req.body.email, req.body.domain);
     }
 
     return res.sendStatus(201);
@@ -271,13 +276,18 @@ app.post("/survey", async (req, res) => {
     let user;
     try {
         user = await collection.findOne({ email: req.body.email });
-        const interactions = user.interactions;
-        const interaction = interactions.find((interaction) => {
-            return interaction.type === req.body.taskType && interaction.domain === req.body.domain && interaction.survey === undefined;
+        for (const interaction of user.interactions) {
+            if (interaction.domain) {
+                interaction.decryptedDomain = decrypt(interaction.domain);
+            }
+        }
+        const interaction = user.interactions.find((interaction) => {
+            return interaction.type === req.body.taskType && interaction.decryptedDomain === req.body.domain && interaction.survey === undefined;
         });
         if (!interaction) {
             return res.sendStatus(400);
         }
+
         await collection.findOneAndUpdate({ email: req.body.email }, {
             $set: {
                 "interactions.$[elem].survey": req.body.survey
