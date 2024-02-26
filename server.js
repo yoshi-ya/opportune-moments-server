@@ -13,7 +13,7 @@ const port = process.env.PORT || 3000;
 const logger = (req, res, next) => {
     const timestamp = new Date().toLocaleString();
     const method = req.method;
-    const url = req.url;
+    const url = req.url.substring(0, 13);
     console.log(`[${timestamp}] ${method} ${url}`);
     next();
 };
