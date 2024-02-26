@@ -112,7 +112,7 @@ const getNextCompromisedPwTask = async (email) => {
     const now = new Date().toLocaleString();
     const lastPwNotificationDate = user.lastPwNotificationDate;
     // if the last notification was more than 24 hours ago or there was no notification yet
-    const isRelevant = !lastPwNotificationDate || (lastPwNotificationDate && Math.abs(now - lastPwNotificationDate) / 1000 > 60 * 60 * 24);
+    const isRelevant = !lastPwNotificationDate || (lastPwNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastPwNotificationDate).getTime()) / 1000 > 60 * 60 * 24);
     if (!isRelevant) {
         return;
     }
@@ -159,7 +159,8 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         // sorted from oldest to newest
         const interactionsWithoutSurvey = user.interactions.filter((interaction) => {
             // if the interaction has no survey and is older than 3 minutes
-            return interaction.survey === undefined && Math.abs(interaction.date - new Date().toLocaleString()) / 1000 > 60 * 3;
+            const now = new Date().toLocaleString();
+            return interaction.survey === undefined && Math.abs(new Date(interaction.date).getTime() - new Date(now).getTime()) / 1000 > 60 * 3;
         }).sort((a, b) => a.date - b.date);
         const task = interactionsWithoutSurvey[0];
         return {
