@@ -154,6 +154,9 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
             // if the interaction has no survey and is older than 10 minutes
             return interaction.survey === undefined && Math.abs(new Date(interaction.date).getTime() - new Date(now).getTime()) / 1000 > 60 * 10;
         }).sort((a, b) => a.date - b.date);
+        if (interactionsWithoutSurvey.length === 0) {
+            return undefined;
+        }
         const task = interactionsWithoutSurvey[0];
         // set lastSurveyDate for user (fixes multiple survey popups on different tabs)
         await collection.findOneAndUpdate({ email }, {
@@ -163,7 +166,8 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         });
         return {
             type: task.type,
-            domain: decrypt(task.domain)
+            domain: decrypt(task.domain),
+            affirmative: task.affirmative
         };
     } catch (err) {
         return undefined;
@@ -179,11 +183,18 @@ async function getNextTask (userEmail) {
         const now = new Date().toLocaleString();
         // if there are no tasks or the last notification was less than 1 hour ago
         const isRelevant = !lastNotificationDate || (lastNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastNotificationDate).getTime()) / 1000 > 60 * 60);
-        if (tasks.length === 0 || !isRelevant) {
+        const interactions = user.interactions || [];
+        // filter out tasks that are already in interactions
+        const relevantTasks = tasks.filter((task) => {
+            return !interactions.find((interaction) => {
+                return interaction.type === task.type && decrypt(interaction.domain) === decrypt(task.domain);
+            });
+        });
+        if (relevantTasks.length === 0 || !isRelevant) {
             return undefined;
         }
-        const randomIndex = Math.floor(Math.random() * tasks.length);
-        const task = tasks[randomIndex];
+        const randomIndex = Math.floor(Math.random() * relevantTasks.length);
+        const task = relevantTasks[randomIndex];
         await collection.findOneAndUpdate({ email: userEmail }, {
             $set: {
                 lastNotificationDate: new Date().toLocaleString()
@@ -225,7 +236,7 @@ app.post("/popup", async (req, res) => {
 
     const taskWithoutSurvey = await getNextTaskWithoutSurvey(domain, userEmail);
     if (taskWithoutSurvey) {
-        return res.send({ type: taskWithoutSurvey.type, domain: taskWithoutSurvey.domain, survey: true });
+        return res.send(taskWithoutSurvey);
     }
 
     const is2FAvailable = check2FA(domain, userEmail);
@@ -242,9 +253,8 @@ app.post("/popup", async (req, res) => {
 });
 
 app.get("/instructions/:type/:url", async (req, res) => {
-    const type = req.params.type;
     const url = req.params.url;
-    const openAiRequestText = type === "pw" ? `Give a very short summary on how to change your password for ${url}` : `Give a very short summary on how to enable 2FA for ${url}`;
+    const openAiRequestText = `Give a very short summary on how to enable 2FA for ${url}`;
     const completion = await openai.chat.completions.create({
         messages: [{ role: "system", content: openAiRequestText }],
         model: "gpt-3.5-turbo"
@@ -261,7 +271,8 @@ app.post("/interaction", async (req, res) => {
                 interactions: {
                     date: new Date().toLocaleString(),
                     type: req.body.taskType,
-                    domain: encrypt(req.body.domain)
+                    domain: encrypt(req.body.domain),
+                    affirmative: req.body.affirmative
                 }
             }
         });
