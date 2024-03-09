@@ -167,7 +167,8 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         return {
             type: task.type,
             domain: decrypt(task.domain),
-            affirmative: task.affirmative
+            affirmative: task.affirmative,
+            survey: true
         };
     } catch (err) {
         return undefined;
@@ -288,13 +289,8 @@ app.post("/survey", async (req, res) => {
     let user;
     try {
         user = await collection.findOne({ email: req.body.email });
-        for (const interaction of user.interactions) {
-            if (interaction.domain) {
-                interaction.decryptedDomain = decrypt(interaction.domain);
-            }
-        }
         const interaction = user.interactions.find((interaction) => {
-            return interaction.type === req.body.taskType && interaction.decryptedDomain === req.body.domain && interaction.survey === undefined;
+            return interaction.type === req.body.taskType && decrypt(interaction.domain) === req.body.domain && interaction.survey === undefined;
         });
         if (!interaction) {
             return res.sendStatus(400);
