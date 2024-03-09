@@ -83,7 +83,8 @@ const createCompromisedPwTask = async (email, accounts) => {
             const encryptedDomain = encrypt(account.domain);
             await collection.findOneAndUpdate({ email }, {
                 $push: {
-                    compromisedDomains: {
+                    tasks: {
+                        type: "pw",
                         domain: encryptedDomain
                     }
                 }
@@ -94,6 +95,35 @@ const createCompromisedPwTask = async (email, accounts) => {
     }
 };
 
+const createTwoFaTask = async (email, domain) => {
+    const collection = client.db("app").collection("users");
+    const user = await collection.findOne({ email });
+    let taskExists = false;
+    if (user.tasks) {
+        taskExists = user.tasks.find((task) => {
+            return decrypt(task.domain) === domain && task.type === "2fa";
+        });
+    }
+
+    if (taskExists) {
+        return;
+    }
+
+    try {
+        const encryptedDomain = encrypt(domain);
+        await collection.findOneAndUpdate({ email }, {
+            $push: {
+                tasks: {
+                    type: "2fa",
+                    domain: encryptedDomain
+                }
+            }
+        });
+    } catch (err) {
+        console.log("Could not create 2FA task.");
+    }
+};
+
 const initializeUser = async (email) => {
     const collection = client.db("app").collection("users");
     await collection.insertOne({ email });
@@ -101,54 +131,12 @@ const initializeUser = async (email) => {
     await createCompromisedPwTask(email, compromisedAccounts);
 };
 
-const getNextCompromisedPwTask = async (email) => {
-    const collection = client.db("app").collection("users");
-    let user;
-    try {
-        user = await collection.findOne({ email });
-    } catch (err) {
-        return;
-    }
-    const now = new Date().toLocaleString();
-    const lastPwNotificationDate = user.lastPwNotificationDate;
-    // if the last notification was more than 24 hours ago or there was no notification yet
-    const isRelevant = !lastPwNotificationDate || (lastPwNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastPwNotificationDate).getTime()) / 1000 > 60 * 60 * 24);
-    if (!isRelevant) {
-        return;
-    }
-    try {
-        const tasks = user.compromisedDomains || [];
-        if (tasks.length > 0) {
-            const encryptedDomain = tasks[0].domain;
-            return {
-                type: "pw",
-                domain: decrypt(encryptedDomain)
-            };
-        }
-    } catch (err) {
-        return undefined;
-    }
-};
-
-const updateLastPwNotificationDate = async (email) => {
+const updateLastNotificationDate = async (email) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.updateOne({ email }, { $set: { lastPwNotificationDate: new Date().toLocaleString() } });
+        await collection.updateOne({ email }, { $set: { lastNotificationDate: new Date().toLocaleString() } });
     } catch (err) {
         console.log("Could not update last compromised password notification date.");
-    }
-};
-
-const updateCompromisedPwTasks = async (email, domain) => {
-    const collection = client.db("app").collection("users");
-    try {
-        await collection.updateOne({ email }, {
-            $pop: {
-                compromisedDomains: -1
-            }
-        });
-    } catch (err) {
-        console.log("Could not update compromised password tasks.");
     }
 };
 
@@ -156,13 +144,23 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
     try {
         const collection = client.db("app").collection("users");
         const user = await collection.findOne({ email });
-        // sorted from oldest to newest
+        const now = new Date().toLocaleString();
+        const lastSurveyDate = user.lastSurveyDate;
+        // if last survey was not more than 1 minutes ago
+        if (lastSurveyDate && Math.abs(new Date().getTime() - new Date(lastSurveyDate).getTime()) / 1000 < 60) {
+            return undefined;
+        }
         const interactionsWithoutSurvey = user.interactions.filter((interaction) => {
-            // if the interaction has no survey and is older than 3 minutes
-            const now = new Date().toLocaleString();
-            return interaction.survey === undefined && Math.abs(new Date(interaction.date).getTime() - new Date(now).getTime()) / 1000 > 60 * 3;
+            // if the interaction has no survey and is older than 10 minutes
+            return interaction.survey === undefined && Math.abs(new Date(interaction.date).getTime() - new Date(now).getTime()) / 1000 > 60 * 10;
         }).sort((a, b) => a.date - b.date);
         const task = interactionsWithoutSurvey[0];
+        // set lastSurveyDate for user (fixes multiple survey popups on different tabs)
+        await collection.findOneAndUpdate({ email }, {
+            $set: {
+                lastSurveyDate: new Date().toLocaleString()
+            }
+        });
         return {
             type: task.type,
             domain: decrypt(task.domain)
@@ -171,6 +169,34 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         return undefined;
     }
 };
+
+async function getNextTask (userEmail) {
+    const collection = client.db("app").collection("users");
+    try {
+        const user = await collection.findOne({ email: userEmail });
+        const tasks = user.tasks || [];
+        const lastNotificationDate = user.lastNotificationDate;
+        const now = new Date().toLocaleString();
+        // if there are no tasks or the last notification was less than 1 hour ago
+        const isRelevant = !lastNotificationDate || (lastNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastNotificationDate).getTime()) / 1000 > 60 * 60);
+        if (tasks.length === 0 || !isRelevant) {
+            return undefined;
+        }
+        const randomIndex = Math.floor(Math.random() * tasks.length);
+        const task = tasks[randomIndex];
+        await collection.findOneAndUpdate({ email: userEmail }, {
+            $set: {
+                lastNotificationDate: new Date().toLocaleString()
+            }
+        });
+        return {
+            type: task.type,
+            domain: decrypt(task.domain)
+        };
+    } catch (err) {
+        return undefined;
+    }
+}
 
 // routes
 app.get("/", async (req, res) => {
@@ -203,30 +229,16 @@ app.post("/popup", async (req, res) => {
     }
 
     const is2FAvailable = check2FA(domain, userEmail);
-    let taskExists;
-    if (user && user.interactions) {
-        for (const interaction of user.interactions) {
-            if (interaction.domain) {
-                interaction.decryptedDomain = decrypt(interaction.domain);
-            }
-        }
-        taskExists = user.interactions.find((interaction) => {
-            return interaction.decryptedDomain === domain && interaction.type === "2fa";
-        });
-    } else {
-        taskExists = false;
+    if (is2FAvailable) {
+        await createTwoFaTask(userEmail, domain);
     }
 
-    if (is2FAvailable && !taskExists) {
-        return res.send({ type: "2fa", domain });
+    const nextTask = await getNextTask(userEmail);
+    if (nextTask) {
+        return res.send(nextTask);
     }
 
-    const createdCompromisedPwTask = await getNextCompromisedPwTask(userEmail);
-    if (createdCompromisedPwTask) {
-        return res.send(createdCompromisedPwTask);
-    }
-
-    return res.sendStatus(200);
+    res.sendStatus(204);
 });
 
 app.get("/instructions/:type/:url", async (req, res) => {
@@ -244,12 +256,6 @@ app.get("/instructions/:type/:url", async (req, res) => {
 app.post("/interaction", async (req, res) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.findOne({ email: req.body.email });
-    } catch (err) {
-        return res.sendStatus(400);
-    }
-
-    try {
         await collection.findOneAndUpdate({ email: req.body.email }, {
             $push: {
                 interactions: {
@@ -260,15 +266,9 @@ app.post("/interaction", async (req, res) => {
             }
         });
     } catch (err) {
-        console.log("Could not store interaction to DB.");
         return res.sendStatus(400);
     }
-
-    if (req.body.taskType === "pw") {
-        await updateLastPwNotificationDate(req.body.email);
-        await updateCompromisedPwTasks(req.body.email, req.body.domain);
-    }
-
+    await updateLastNotificationDate(req.body.email);
     return res.sendStatus(201);
 });
 
@@ -294,11 +294,14 @@ app.post("/survey", async (req, res) => {
                 "interactions.$[elem].survey": req.body.survey
             }
         }, {
-            arrayFilters: [{ "elem.type": interaction.type, "elem.domain": interaction.domain, "elem.survey": undefined }]
+            arrayFilters: [{
+                "elem.type": interaction.type,
+                "elem.domain": interaction.domain,
+                "elem.survey": undefined
+            }]
         });
         return res.sendStatus(201);
     } catch (err) {
-        console.log(err);
         return res.sendStatus(400);
     }
 });
