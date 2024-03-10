@@ -11,7 +11,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 const logger = (req, res, next) => {
-    const timestamp = new Date().toLocaleString();
+    const timestamp = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
     const method = req.method;
     const url = req.url.substring(0, 13);
     console.log(`[${timestamp}] ${method} ${url}`);
@@ -135,7 +135,7 @@ const initializeUser = async (email) => {
 const updateLastAccessDate = async (email) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.updateOne({ email }, { $set: { lastAccessDate: new Date().toLocaleString() } });
+        await collection.updateOne({ email }, { $set: { lastAccessDate: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" }) } });
     } catch (err) {
         console.log("Could not update last compromised password notification date.");
     }
@@ -145,7 +145,7 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
     try {
         const collection = client.db("app").collection("users");
         const user = await collection.findOne({ email });
-        const now = new Date().toLocaleString();
+        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
         const lastSurveyDate = user.lastSurveyDate;
         // if last survey was not more than 1 minutes ago
         if (lastSurveyDate && Math.abs(new Date().getTime() - new Date(lastSurveyDate).getTime()) / 1000 < 60) {
@@ -162,7 +162,7 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         // set lastSurveyDate for user (fixes multiple survey popups on different tabs)
         await collection.findOneAndUpdate({ email }, {
             $set: {
-                lastSurveyDate: new Date().toLocaleString()
+                lastSurveyDate: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" })
             }
         });
         return {
@@ -182,7 +182,7 @@ async function getNextTask (userEmail) {
         const user = await collection.findOne({ email: userEmail });
         const tasks = user.tasks || [];
         const lastNotificationDate = user.lastNotificationDate;
-        const now = new Date().toLocaleString();
+        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
         // if there are no tasks or the last notification was less than 1 hour ago
         const isRelevant = !lastNotificationDate || (lastNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastNotificationDate).getTime()) / 1000 > 60 * 60);
         const interactions = user.interactions || [];
@@ -199,7 +199,7 @@ async function getNextTask (userEmail) {
         const task = relevantTasks[randomIndex];
         await collection.findOneAndUpdate({ email: userEmail }, {
             $set: {
-                lastNotificationDate: new Date().toLocaleString()
+                lastNotificationDate: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" })
             }
         });
         return {
@@ -284,7 +284,7 @@ app.post("/interaction", async (req, res) => {
         await collection.findOneAndUpdate({ email: req.body.email }, {
             $push: {
                 interactions: {
-                    date: new Date().toLocaleString(),
+                    date: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" }),
                     type: req.body.taskType,
                     domain: encrypt(req.body.domain),
                     affirmative: req.body.affirmative
