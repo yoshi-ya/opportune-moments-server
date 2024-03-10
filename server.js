@@ -76,7 +76,7 @@ const getCompromisedAccounts = async (email) => {
     return breaches;
 };
 
-const createCompromisedPwTask = async (email, accounts) => {
+const createCompromisedPwTask = async (email, accountEmail, accounts) => {
     const collection = client.db("app").collection("users");
     try {
         for (const account of accounts) {
@@ -85,7 +85,8 @@ const createCompromisedPwTask = async (email, accounts) => {
                 $push: {
                     tasks: {
                         type: "pw",
-                        domain: encryptedDomain
+                        domain: encryptedDomain,
+                        account: accountEmail
                     }
                 }
             });
@@ -126,15 +127,16 @@ const createTwoFaTask = async (email, domain) => {
 
 const initializeUser = async (email) => {
     const collection = client.db("app").collection("users");
-    await collection.insertOne({ email });
+    await collection.insertOne({ email, initial: true });
+    await updateLastAccessDate(email);
     const compromisedAccounts = await getCompromisedAccounts(email);
-    await createCompromisedPwTask(email, compromisedAccounts);
+    await createCompromisedPwTask(email, email, compromisedAccounts);
 };
 
-const updateLastNotificationDate = async (email) => {
+const updateLastAccessDate = async (email) => {
     const collection = client.db("app").collection("users");
     try {
-        await collection.updateOne({ email }, { $set: { lastNotificationDate: new Date().toLocaleString() } });
+        await collection.updateOne({ email }, { $set: { lastAccessDate: new Date().toLocaleString() } });
     } catch (err) {
         console.log("Could not update last compromised password notification date.");
     }
@@ -203,7 +205,8 @@ async function getNextTask (userEmail) {
         });
         return {
             type: task.type,
-            domain: decrypt(task.domain)
+            domain: decrypt(task.domain),
+            account: task.account
         };
     } catch (err) {
         return undefined;
@@ -231,10 +234,22 @@ app.post("/popup", async (req, res) => {
         user = undefined;
     }
 
+    if (user) {
+        const lastAccessDate = user.lastAccessDate;
+        // if last access was less than 5min ago
+        if (lastAccessDate && Math.abs(new Date().getTime() - new Date(lastAccessDate).getTime()) / 1000 < 60 * 5) {
+            return res.sendStatus(204);
+        }
+        await updateLastAccessDate(userEmail);
+    }
+
     if (!user) {
         await initializeUser(userEmail);
     }
 
+    if (!user || user.initial) {
+        return res.send({ initial: true });
+    }
     const taskWithoutSurvey = await getNextTaskWithoutSurvey(domain, userEmail);
     if (taskWithoutSurvey) {
         return res.send(taskWithoutSurvey);
@@ -280,7 +295,6 @@ app.post("/interaction", async (req, res) => {
     } catch (err) {
         return res.sendStatus(400);
     }
-    await updateLastNotificationDate(req.body.email);
     return res.sendStatus(201);
 });
 
@@ -307,6 +321,30 @@ app.post("/survey", async (req, res) => {
                 "elem.survey": undefined
             }]
         });
+        return res.sendStatus(201);
+    } catch (err) {
+        return res.sendStatus(400);
+    }
+});
+
+app.post("/email", async (req, res) => {
+    const collection = client.db("app").collection("users");
+    const emails = req.body.emails;
+    if (!emails) {
+        return res.sendStatus(400);
+    }
+    try {
+        await collection.findOneAndUpdate({ email: req.body.email }, {
+            $set: {
+                accounts: emails,
+                initial: false
+            }
+        });
+        // create compromised password tasks
+        for (const email of emails) {
+            const compromisedAccounts = await getCompromisedAccounts(email);
+            await createCompromisedPwTask(req.body.email, email, compromisedAccounts);
+        }
         return res.sendStatus(201);
     } catch (err) {
         return res.sendStatus(400);
