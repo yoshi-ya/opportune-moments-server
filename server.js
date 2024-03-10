@@ -86,7 +86,7 @@ const createCompromisedPwTask = async (email, accountEmail, accounts) => {
                     tasks: {
                         type: "pw",
                         domain: encryptedDomain,
-                        account: accountEmail
+                        account: encrypt(accountEmail)
                     }
                 }
             });
@@ -111,12 +111,11 @@ const createTwoFaTask = async (email, domain) => {
     }
 
     try {
-        const encryptedDomain = encrypt(domain);
         await collection.findOneAndUpdate({ email }, {
             $push: {
                 tasks: {
                     type: "2fa",
-                    domain: encryptedDomain
+                    domain: encrypt(domain)
                 }
             }
         });
@@ -206,7 +205,7 @@ async function getNextTask (userEmail) {
         return {
             type: task.type,
             domain: decrypt(task.domain),
-            account: task.account
+            account: decrypt(task.account) || undefined
         };
     } catch (err) {
         return undefined;
@@ -336,7 +335,6 @@ app.post("/email", async (req, res) => {
     try {
         await collection.findOneAndUpdate({ email: req.body.email }, {
             $set: {
-                accounts: emails,
                 initial: false
             }
         });
