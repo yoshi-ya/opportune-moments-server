@@ -148,7 +148,7 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
         const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
         const lastSurveyDate = user.lastSurveyDate;
         // if last survey was not more than 1 minutes ago
-        if (lastSurveyDate && Math.abs(new Date().getTime() - new Date(lastSurveyDate).getTime()) / 1000 < 60) {
+        if (lastSurveyDate && Math.abs(new Date(now).getTime() - new Date(lastSurveyDate).getTime()) / 1000 < 60) {
             return undefined;
         }
         const interactionsWithoutSurvey = user.interactions.filter((interaction) => {
@@ -202,11 +202,18 @@ async function getNextTask (userEmail) {
                 lastNotificationDate: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" })
             }
         });
-        return {
-            type: task.type,
-            domain: decrypt(task.domain),
-            account: decrypt(task.account) || undefined
-        };
+        if (task.type === "2fa") {
+            return {
+                type: task.type,
+                domain: decrypt(task.domain)
+            };
+        } else {
+            return {
+                type: task.type,
+                domain: decrypt(task.domain),
+                account: decrypt(task.account)
+            };
+        }
     } catch (err) {
         return undefined;
     }
@@ -234,9 +241,14 @@ app.post("/popup", async (req, res) => {
     }
 
     if (user) {
+        const is2FAvailable = check2FA(domain, userEmail);
+        if (is2FAvailable) {
+            await createTwoFaTask(userEmail, domain);
+        }
         const lastAccessDate = user.lastAccessDate;
         // if last access was less than 5min ago
-        if (lastAccessDate && Math.abs(new Date().getTime() - new Date(lastAccessDate).getTime()) / 1000 < 60 * 5) {
+        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+        if (lastAccessDate && Math.abs(new Date(now).getTime() - new Date(lastAccessDate).getTime()) / 1000 < 60 * 5) {
             return res.sendStatus(204);
         }
         await updateLastAccessDate(userEmail);
@@ -249,14 +261,10 @@ app.post("/popup", async (req, res) => {
     if (!user || user.initial) {
         return res.send({ initial: true });
     }
+
     const taskWithoutSurvey = await getNextTaskWithoutSurvey(domain, userEmail);
     if (taskWithoutSurvey) {
         return res.send(taskWithoutSurvey);
-    }
-
-    const is2FAvailable = check2FA(domain, userEmail);
-    if (is2FAvailable) {
-        await createTwoFaTask(userEmail, domain);
     }
 
     const nextTask = await getNextTask(userEmail);
