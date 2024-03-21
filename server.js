@@ -5,10 +5,12 @@ const { MongoClient } = require("mongodb");
 const { OpenAI } = require("openai");
 const { encrypt, decrypt } = require("./crypto");
 const directory = require("./2fa_directory.json");
+const moment = require("moment");
 
 const dbUri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.egjedqq.mongodb.net/?retryWrites=true&w=majority`;
 const app = express();
 const port = process.env.PORT || 3000;
+const localeDateFormat = "DD.MM.YYYY, HH:mm:ss";
 
 const logger = (req, res, next) => {
     const timestamp = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
@@ -145,15 +147,18 @@ const getNextTaskWithoutSurvey = async (domain, email) => {
     try {
         const collection = client.db("app").collection("users");
         const user = await collection.findOne({ email });
-        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
-        const lastSurveyDate = user.lastSurveyDate;
+        const nowString = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+        const now = moment(nowString, localeDateFormat).toDate();
+        const lastSurveyDateString = user.lastSurveyDate;
+        const lastSurveyDate = lastSurveyDateString ? moment(lastSurveyDateString, localeDateFormat).toDate() : undefined;
         // if last survey was not more than 1 minutes ago
-        if (lastSurveyDate && Math.abs(new Date(now).getTime() - new Date(lastSurveyDate).getTime()) / 1000 < 60) {
+        if (lastSurveyDate && Math.abs(new Date(now).getTime() - lastSurveyDate.getTime()) / 1000 < 60) {
             return undefined;
         }
         const interactionsWithoutSurvey = user.interactions.filter((interaction) => {
             // if the interaction has no survey and is older than 10 minutes
-            return interaction.survey === undefined && Math.abs(new Date(interaction.date).getTime() - new Date(now).getTime()) / 1000 > 60 * 10;
+            const interactionDate = moment(interaction.date, localeDateFormat).toDate();
+            return interaction.survey === undefined && Math.abs(interactionDate.getTime() - new Date(now).getTime()) / 1000 > 60 * 10;
         }).sort((a, b) => a.date - b.date);
         if (interactionsWithoutSurvey.length === 0) {
             return undefined;
@@ -181,10 +186,12 @@ async function getNextTask (userEmail) {
     try {
         const user = await collection.findOne({ email: userEmail });
         const tasks = user.tasks || [];
-        const lastNotificationDate = user.lastNotificationDate;
-        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+        const lastNotificationDateString = user.lastNotificationDate;
+        const lastNotificationDate = lastNotificationDateString ? moment(lastNotificationDateString, localeDateFormat).toDate() : undefined;
+        const nowString = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+        const now = moment(nowString, localeDateFormat).toDate();
         // if there are no tasks or the last notification was less than 1 hour ago
-        const isRelevant = !lastNotificationDate || (lastNotificationDate && Math.abs(new Date(now).getTime() - new Date(lastNotificationDate).getTime()) / 1000 > 60 * 60);
+        const isRelevant = !lastNotificationDate || (lastNotificationDate && Math.abs(new Date(now).getTime() - lastNotificationDate.getTime()) / 1000 > 60 * 60);
         const interactions = user.interactions || [];
         // filter out tasks that are already in interactions
         const relevantTasks = tasks.filter((task) => {
@@ -245,10 +252,12 @@ app.post("/popup", async (req, res) => {
         if (is2FAvailable) {
             await createTwoFaTask(userEmail, domain);
         }
-        const lastAccessDate = user.lastAccessDate;
+        const lastAccessDateString = user.lastAccessDate;
+        const lastAccessDate = lastAccessDateString ? moment(lastAccessDateString, localeDateFormat).toDate() : undefined;
         // if last access was less than 5min ago
-        const now = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
-        if (lastAccessDate && Math.abs(new Date(now).getTime() - new Date(lastAccessDate).getTime()) / 1000 < 60 * 5) {
+        const nowString = new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" });
+        const now = moment(nowString, localeDateFormat).toDate();
+        if (lastAccessDate && Math.abs(new Date(now).getTime() - lastAccessDate.getTime()) / 1000 < 60 * 5) {
             return res.sendStatus(204);
         }
         await updateLastAccessDate(userEmail);
