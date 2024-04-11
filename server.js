@@ -7,7 +7,7 @@ const { encrypt, decrypt } = require("./crypto");
 const directory = require("./2fa_directory.json");
 const moment = require("moment");
 
-const dbUri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.egjedqq.mongodb.net/?retryWrites=true&w=majority`;
+const dbUri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.3dqodi4.mongodb.net/?retryWrites=true&w=majority`;
 const app = express();
 const port = process.env.PORT || 3000;
 const localeDateFormat = "DD.MM.YYYY, HH:mm:ss";
